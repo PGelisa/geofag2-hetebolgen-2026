@@ -58,10 +58,18 @@ STASJONER = {
 }
 
 
+# Nedlastede ERA5-filer som er åpnet, men ikke lagret ennå. De slettes først
+# når resultatet er lagret, slik at en feil underveis ikke krever ny nedlasting.
+BRUKTE = []
+
+
 def lagre(ds, fil):
     """Komprimert NetCDF med 32-biters tall (små filer)."""
     enc = {v: {"zlib": True, "complevel": 4, "dtype": "float32"} for v in ds.data_vars}
     ds.to_netcdf(fil, encoding=enc)
+    for f in BRUKTE:
+        f.unlink(missing_ok=True)
+    BRUKTE.clear()
 
 
 def filnavn(by):
@@ -174,7 +182,7 @@ def apne(fil):
         shutil.rmtree(mappe)
     else:
         ds = xr.open_dataset(fil).load()
-    fil.unlink()
+    BRUKTE.append(fil)
     navn = {"valid_time": "time", "latitude": "lat", "longitude": "lon",
             "pressure_level": "nivaa"}
     ds = ds.rename({k: v for k, v in navn.items() if k in ds.variables})
@@ -230,8 +238,8 @@ def hent_era5():
                     ["geopotential", "temperature"], "daily_mean",
                     "2026-06-10", "2026-07-20", OMR_LUFT, nivaa=["500", "850"])
         ds = ds.coarsen(lat=2, lon=2, boundary="trim").mean()      # 0,5° holder
-        ut = xr.Dataset({"z500": ds.z.sel(nivaa=500) / 9.80665 / 10,      # gpdam
-                         "t850": ds.t.sel(nivaa=850) - 273.15})
+        ut = xr.Dataset({"z500": ds.z.sel(nivaa=500, drop=True) / 9.80665 / 10,  # gpdam
+                         "t850": ds.t.sel(nivaa=850, drop=True) - 273.15})
         lagre(ut, DATA / "era5_trykkflater.nc")
 
     if ferdig("era5_klima_t2m.nc") and ferdig("era5_klima_z500.nc"):
