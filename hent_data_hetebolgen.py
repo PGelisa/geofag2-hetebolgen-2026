@@ -27,6 +27,7 @@ Datakilder
 import argparse
 import shutil
 import sys
+import time
 import zipfile
 from pathlib import Path
 from urllib.parse import quote
@@ -74,18 +75,34 @@ def hent_punktserier():
     print("Henter punktserier 1940–2026 (ERA5 via Open-Meteo) ...")
     url = "https://archive-api.open-meteo.com/v1/archive"
     for by, (lat, lon) in BYER.items():
-        r = requests.get(url, timeout=300, params={
-            "latitude": lat, "longitude": lon,
-            "start_date": "1940-01-01", "end_date": "2026-09-30",
-            "daily": "temperature_2m_max,temperature_2m_min",
-            "timezone": "auto", "models": "era5"})
+        fil = f"punkt_{filnavn(by)}.csv"
+        if (DATA / fil).exists():
+            print(f"  {fil} finnes allerede, hopper over")
+            continue
+        # Open-Meteo har en grense per minutt og per time. Lange serier teller som
+        # mange forespørsler, så vi venter og prøver igjen ved feil 429.
+        for forsok in range(6):
+            r = requests.get(url, timeout=300, params={
+                "latitude": lat, "longitude": lon,
+                "start_date": "1940-01-01", "end_date": "2026-09-30",
+                "daily": "temperature_2m_max,temperature_2m_min",
+                "timezone": "auto", "models": "era5"})
+            if r.status_code != 429:
+                break
+            vent = 70 if forsok < 3 else 600
+            print(f"  {by}: for mange forespørsler, venter {vent} s ...")
+            time.sleep(vent)
+        if r.status_code == 429:
+            print("  Grensen per time er nådd. Kjør skriptet på nytt om en time.")
+            print("  Byene som allerede er hentet, blir ikke hentet på nytt.")
+            return
         r.raise_for_status()
         d = r.json()["daily"]
         df = pd.DataFrame({"dato": d["time"], "tmaks": d["temperature_2m_max"],
                            "tmin": d["temperature_2m_min"]})
-        fil = f"punkt_{filnavn(by)}.csv"
         df.to_csv(DATA / fil, index=False)
         print(f"  {fil} ({len(df)} dager)")
+        time.sleep(30)
 
 
 # ---------------------------------------------------------------------------
