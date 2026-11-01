@@ -25,6 +25,7 @@ Datakilder
 """
 
 import argparse
+import shutil
 import sys
 import zipfile
 from pathlib import Path
@@ -151,11 +152,9 @@ def apne(fil):
         mappe = fil.with_suffix("")
         with zipfile.ZipFile(fil) as z:
             z.extractall(mappe)
-        filer = sorted(mappe.glob("*.nc"))
+        filer = sorted(mappe.rglob("*.nc"))
         ds = xr.merge([xr.open_dataset(f).load() for f in filer], compat="override")
-        for f in filer:
-            f.unlink()
-        mappe.rmdir()
+        shutil.rmtree(mappe)
     else:
         ds = xr.open_dataset(fil).load()
     fil.unlink()
@@ -182,41 +181,57 @@ def hent_era5():
                    "frequency": "1_hourly", "area": omraade}
             if nivaa:
                 req["pressure_level"] = nivaa
-            tmp = DATA / f"_tmp_{stat}_{aar}{mnd:02d}.zip"
-            c.retrieve(dataset, req, str(tmp))
+            tmp = DATA / f"_tmp_{dataset[13:19]}_{stat}_{aar}{mnd:02d}.zip"
+            if tmp.exists():
+                print(f"  bruker {tmp.name} fra forrige forsøk")
+            else:
+                c.retrieve(dataset, req, str(tmp))
             biter.append(apne(tmp))
         return xr.concat(biter, dim="time")
 
-    print("ERA5: høyeste temperatur hvert døgn ...")
-    ds = daglig("derived-era5-single-levels-daily-statistics", ["2m_temperature"],
-                "daily_maximum", "2026-06-01", "2026-07-31", OMR_BAKKE)
-    lagre((ds.rename({"t2m": "tmaks"}) - 273.15), DATA / "era5_tmaks.nc")
+    def ferdig(fil):
+        if (DATA / fil).exists():
+            print(f"ERA5: {fil} finnes allerede, hopper over")
+            return True
+        return False
 
-    print("ERA5: døgnmiddeltemperatur ...")
-    ds = daglig("derived-era5-single-levels-daily-statistics", ["2m_temperature"],
-                "daily_mean", "2026-06-01", "2026-07-31", OMR_BAKKE)
-    lagre((ds.rename({"t2m": "tmiddel"}) - 273.15), DATA / "era5_tmiddel.nc")
+    if not ferdig("era5_tmaks.nc"):
+        print("ERA5: høyeste temperatur hvert døgn ...")
+        ds = daglig("derived-era5-single-levels-daily-statistics", ["2m_temperature"],
+                    "daily_maximum", "2026-06-01", "2026-07-31", OMR_BAKKE)
+        lagre((ds.rename({"t2m": "tmaks"}) - 273.15), DATA / "era5_tmaks.nc")
 
-    print("ERA5: geopotensial og temperatur i 500 og 850 hPa ...")
-    ds = daglig("derived-era5-pressure-levels-daily-statistics",
-                ["geopotential", "temperature"], "daily_mean",
-                "2026-06-10", "2026-07-20", OMR_LUFT, nivaa=["500", "850"])
-    ds = ds.coarsen(lat=2, lon=2, boundary="trim").mean()      # 0,5° holder
-    ut = xr.Dataset({"z500": ds.z.sel(nivaa=500) / 9.80665 / 10,      # gpdam
-                     "t850": ds.t.sel(nivaa=850) - 273.15})
-    lagre(ut, DATA / "era5_trykkflater.nc")
+    if not ferdig("era5_tmiddel.nc"):
+        print("ERA5: døgnmiddeltemperatur ...")
+        ds = daglig("derived-era5-single-levels-daily-statistics", ["2m_temperature"],
+                    "daily_mean", "2026-06-01", "2026-07-31", OMR_BAKKE)
+        lagre((ds.rename({"t2m": "tmiddel"}) - 273.15), DATA / "era5_tmiddel.nc")
 
+    if not ferdig("era5_trykkflater.nc"):
+        print("ERA5: geopotensial og temperatur i 500 og 850 hPa ...")
+        ds = daglig("derived-era5-pressure-levels-daily-statistics",
+                    ["geopotential", "temperature"], "daily_mean",
+                    "2026-06-10", "2026-07-20", OMR_LUFT, nivaa=["500", "850"])
+        ds = ds.coarsen(lat=2, lon=2, boundary="trim").mean()      # 0,5° holder
+        ut = xr.Dataset({"z500": ds.z.sel(nivaa=500) / 9.80665 / 10,      # gpdam
+                         "t850": ds.t.sel(nivaa=850) - 273.15})
+        lagre(ut, DATA / "era5_trykkflater.nc")
+
+    if ferdig("era5_klima_t2m.nc") and ferdig("era5_klima_z500.nc"):
+        return
     print("ERA5: klimatologi 1991–2020 for juni og juli ...")
     aar = [str(a) for a in range(1991, 2021)]
     felles = {"product_type": ["monthly_averaged_reanalysis"], "year": aar,
               "month": ["06", "07"], "time": ["00:00"],
               "data_format": "netcdf", "download_format": "unarchived"}
     tmp = DATA / "_tmp_klima_t2m.nc"
-    c.retrieve("reanalysis-era5-single-levels-monthly-means",
+    if not tmp.exists():
+        c.retrieve("reanalysis-era5-single-levels-monthly-means",
                {**felles, "variable": ["2m_temperature"], "area": OMR_BAKKE}, str(tmp))
     t2m = apne(tmp).t2m
     tmp = DATA / "_tmp_klima_z.nc"
-    c.retrieve("reanalysis-era5-pressure-levels-monthly-means",
+    if not tmp.exists():
+        c.retrieve("reanalysis-era5-pressure-levels-monthly-means",
                {**felles, "variable": ["geopotential"], "pressure_level": ["500"],
                 "area": OMR_LUFT}, str(tmp))
     z = apne(tmp).z
